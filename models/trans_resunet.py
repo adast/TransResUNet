@@ -1,0 +1,96 @@
+import ml_collections
+import numpy as np
+import math
+
+import torch
+from torch import nn
+
+from models.hybrid_vit import HybridVit
+
+
+class ResConv(nn.Module):
+    def __init__(self, input_dim, output_dim, stride, padding):
+        super().__init__()
+        self.conv_block = nn.Sequential(
+            nn.BatchNorm2d(input_dim),
+            nn.ReLU(),
+            nn.Conv2d(
+                input_dim, output_dim, kernel_size=3, stride=stride, padding=padding
+            ),
+            nn.BatchNorm2d(output_dim),
+            nn.ReLU(),
+            nn.Conv2d(output_dim, output_dim, kernel_size=3, padding=1),
+        )
+        self.conv_skip = nn.Sequential(
+            nn.Conv2d(input_dim, output_dim, kernel_size=3, stride=stride, padding=1),
+            nn.BatchNorm2d(output_dim),
+        )
+
+    def forward(self, x):
+        return self.conv_block(x) + self.conv_skip(x)
+    
+    
+class ResDecoderBlock(nn.Module):
+    def __init__(self, input_dim, output_dim, skip_dim=0):
+        super().__init__()
+        self.upsample = nn.UpsamplingBilinear2d(scale_factor=2)
+        self.res_conv = ResConv(input_dim + skip_dim, output_dim, 1, 1)
+        
+    def forward(self, x, skip_connection=None):
+        x = self.upsample(x)
+        if skip_connection is not None:
+            x = torch.cat([x, skip_connection], dim=1)
+        return self.res_conv(x)
+    
+    
+class TransResUNet(nn.Module):
+    def __init__(self, config: ml_collections.ConfigDict):
+        super().__init__()
+        self.config = config
+        
+        # Params
+        self.grid_size = (
+            config.image_size[0] // config.transformer.patch_size,
+            config.image_size[1] // config.transformer.patch_size,
+        )
+        self.up_levels = (int)(math.log2(config.transformer.patch_size))
+        self.resnet_width = 64 * config.resnet.width_factor
+        self.n_skip_channels = self.up_levels - 1 
+        self.skip_channels = [self.resnet_width * 2**(i + 1) for i in range(1, self.n_skip_channels)[::-1]] + [self.resnet_width]
+        self.decoder_channels = [self.config.transformer.hidden_size // 2**i for i in range(self.up_levels + 1)]
+
+        # Encoder layers
+        self.transformer = HybridVit(config)
+        self.transformer.from_pretrained(weights=np.load(config.pre_trained_path))
+        
+        # Bridge layers
+        
+        
+        # Decoder layers
+        self.decoder_blocks = nn.ModuleList()
+        for i in range(self.up_levels):
+            if i < self.n_skip_channels:
+                self.decoder_blocks.append(
+                    ResDecoderBlock(self.decoder_channels[i], self.decoder_channels[i + 1], self.skip_channels[i])
+                )
+            else:
+                self.decoder_blocks.append(ResDecoderBlock(self.decoder_channels[i], self.decoder_channels[i + 1]))
+                           
+        # Final convolution
+        self.conv_final = nn.Conv2d(self.decoder_channels[-1], config.n_classes, kernel_size=1)
+
+    def forward(self, pixel_values):
+        # Transformer encoder
+        x, _, skip_connections = self.transformer(pixel_values)
+        x = x[:, 1:, :]
+        x = x.permute(0, 2, 1)
+        x = x.contiguous().view(-1, self.config.transformer.hidden_size, self.grid_size[0], self.grid_size[1])
+        
+        # Residual decoder
+        for i, block in enumerate(self.decoder_blocks):
+            if i < self.n_skip_channels:
+                x = block(x, skip_connections[i])
+            else:
+                x = block(x)
+        
+        return self.conv_final(x)
