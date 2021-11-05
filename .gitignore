@@ -1,3 +1,4 @@
 imagenet21k_R50+ViT-B_16.npz
 imagenet21k_R50+ViT-L_32.npz
 .ipynb_checkpoints/
+models/__pycache__/
