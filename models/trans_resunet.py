@@ -8,29 +8,6 @@ from torch import nn
 from models.hybrid_vit import HybridVit
 
 
-class Conv2dReLU(nn.Sequential):
-    def __init__(
-            self,
-            in_channels,
-            out_channels,
-            kernel_size,
-            padding=0,
-            stride=1,
-            use_batchnorm=True,
-    ):
-        conv = nn.Conv2d(
-            in_channels,
-            out_channels,
-            kernel_size,
-            stride=stride,
-            padding=padding,
-            bias=not (use_batchnorm),
-        )
-        relu = nn.ReLU(inplace=True)
-        bn = nn.BatchNorm2d(out_channels)
-        super(Conv2dReLU, self).__init__(conv, bn, relu)
-
-
 class ResConv(nn.Module):
     def __init__(self, input_dim, output_dim, stride, padding):
         super().__init__()
@@ -78,8 +55,7 @@ class TransResUNet(nn.Module):
             config.image_size[1] // config.transformer.patch_size,
         )
         self.up_levels = (int)(math.log2(config.transformer.patch_size))
-        self.decoder_head_channels = config.decoder.head_channels
-        self.decoder_channels = [self.decoder_head_channels // 2**i for i in range(self.up_levels + 1)]
+        self.decoder_channels = [self.hidden_size // 2**i for i in range(self.up_levels + 1)]
         self.n_skip_channels = self.up_levels - 1 
         self.resnet_width = 64 * config.resnet.width_factor
         self.skip_channels = [self.resnet_width * 2**(i + 1) for i in range(1, self.n_skip_channels)[::-1]] + [self.resnet_width]
@@ -87,9 +63,6 @@ class TransResUNet(nn.Module):
         # Encoder layers
         self.transformer = HybridVit(config)
         self.transformer.from_pretrained(weights=np.load(config.pre_trained_path))
-        
-        # Bridge layers
-        self.bridge = Conv2dReLU(self.hidden_size, self.decoder_head_channels, kernel_size=3, padding='same')
         
         # Decoder layers
         self.decoder_blocks = nn.ModuleList()
@@ -110,9 +83,6 @@ class TransResUNet(nn.Module):
         x = x[:, 1:, :]
         x = x.permute(0, 2, 1)
         x = x.contiguous().view(-1, self.hidden_size, self.grid_size[0], self.grid_size[1])
-
-        # Bridge
-        x = self.bridge(x)
         
         # Residual decoder
         for i, block in enumerate(self.decoder_blocks):
