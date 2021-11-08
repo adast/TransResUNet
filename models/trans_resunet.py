@@ -56,7 +56,8 @@ class ResConv(nn.Module):
 class ResDecoderBlock(nn.Module):
     def __init__(self, input_dim, output_dim, skip_dim=0):
         super().__init__()
-        self.upsample = nn.UpsamplingBilinear2d(scale_factor=2)
+        self.upsample = nn.ConvTranspose2d(input_dim, input_dim, kernel_size=2, stride=2)
+        # self.upsample = nn.UpsamplingBilinear2d(scale_factor=2)
         self.res_conv = ResConv(input_dim + skip_dim, output_dim, 1, 1)
         
     def forward(self, x, skip_connection=None):
