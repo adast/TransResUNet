@@ -51,19 +51,61 @@ class ResConv(nn.Module):
 
     def forward(self, x):
         return self.conv_block(x) + self.conv_skip(x)
-    
-    
-class ResDecoderBlock(nn.Module):
-    def __init__(self, input_dim, output_dim, skip_dim=0):
+
+
+class AttentionBlock(nn.Module):
+    def __init__(self, input_encoder_dim, input_decoder_dim, output_dim):
         super().__init__()
-        self.upsample = nn.ConvTranspose2d(input_dim, input_dim, kernel_size=2, stride=2)
-        # self.upsample = nn.UpsamplingBilinear2d(scale_factor=2)
-        self.res_conv = ResConv(input_dim + skip_dim, output_dim, 1, 1)
+
+        self.conv_encoder = nn.Sequential(
+            nn.BatchNorm2d(input_encoder_dim),
+            nn.ReLU(),
+            nn.Conv2d(input_encoder_dim, output_dim, 3, padding=1),
+            nn.MaxPool2d(2, 2),
+        )
+
+        self.conv_decoder = nn.Sequential(
+            nn.BatchNorm2d(input_decoder_dim),
+            nn.ReLU(),
+            nn.Conv2d(input_decoder_dim, output_dim, 3, padding=1),
+        )
+
+        self.conv_attn = nn.Sequential(
+            nn.BatchNorm2d(output_dim),
+            nn.ReLU(),
+            nn.Conv2d(output_dim, 1, 1),
+        )
+
+    def forward(self, x1, x2):
+        out = self.conv_encoder(x1) + self.conv_decoder(x2)
+        out = self.conv_attn(out)
+        return out * x2
+    
+    
+class DecoderBlock(nn.Module):
+    def __init__(self, input_decoder_dim, output_dim, skip_dim=0):
+        super().__init__()
+        if skip_dim != 0:
+            attn_out_dim = max(input_decoder_dim, skip_dim)
+            self.attn = AttentionBlock(
+                input_encoder_dim=skip_dim, 
+                input_decoder_dim=input_decoder_dim, 
+                output_dim=attn_out_dim
+            )
+            self.upsample = nn.ConvTranspose2d(attn_out_dim, attn_out_dim, kernel_size=2, stride=2)
+            self.res_conv = ResConv(attn_out_dim + skip_dim, output_dim, 1, 1)
+        else:
+            self.upsample = nn.ConvTranspose2d(input_decoder_dim, input_decoder_dim, kernel_size=2, stride=2)
+            self.res_conv = ResConv(input_decoder_dim, output_dim, 1, 1)
         
     def forward(self, x, skip_connection=None):
-        x = self.upsample(x)
         if skip_connection is not None:
+            x = self.attn(skip_connection, x)
+            x = self.upsample(x)
             x = torch.cat([x, skip_connection], dim=1)
+        else:
+            x = self.upsample(x)
+
         return self.res_conv(x)
     
     
@@ -96,10 +138,19 @@ class TransResUNet(nn.Module):
         for i in range(self.up_levels):
             if i < self.n_skip_channels:
                 self.decoder_blocks.append(
-                    ResDecoderBlock(self.decoder_channels[i], self.decoder_channels[i + 1], self.skip_channels[i])
+                    DecoderBlock(
+                        input_decoder_dim=self.decoder_channels[i], 
+                        output_dim=self.decoder_channels[i + 1], 
+                        skip_dim=self.skip_channels[i]
+                    )
                 )
             else:
-                self.decoder_blocks.append(ResDecoderBlock(self.decoder_channels[i], self.decoder_channels[i + 1]))
+                self.decoder_blocks.append(
+                    DecoderBlock(
+                        input_decoder_dim=self.decoder_channels[i], 
+                        output_dim=self.decoder_channels[i + 1]
+                    )
+                )
                            
         # Final convolution
         self.conv_final = nn.Conv2d(self.decoder_channels[-1], config.n_classes, kernel_size=1)
@@ -113,8 +164,8 @@ class TransResUNet(nn.Module):
 
         # Bridge
         x = self.bridge(x)
-        
-        # Residual decoder
+
+        # Decoder
         for i, block in enumerate(self.decoder_blocks):
             if i < self.n_skip_channels:
                 x = block(x, skip_connections[i])
