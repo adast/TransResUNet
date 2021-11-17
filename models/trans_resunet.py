@@ -8,49 +8,27 @@ from torch import nn
 from models.hybrid_vit import HybridVit
 
 
-class ASPP(nn.Module):
-    def __init__(self, in_dims, out_dims, rate=[6, 12, 18]):
-        super(ASPP, self).__init__()
-
-        self.aspp_block1 = nn.Sequential(
-            nn.Conv2d(
-                in_dims, out_dims, 3, stride=1, padding=rate[0], dilation=rate[0]
-            ),
-            nn.ReLU(inplace=True),
-            nn.BatchNorm2d(out_dims),
+class Conv2dReLU(nn.Sequential):
+    def __init__(
+            self,
+            in_channels,
+            out_channels,
+            kernel_size,
+            padding=0,
+            stride=1,
+            use_batchnorm=True,
+    ):
+        conv = nn.Conv2d(
+            in_channels,
+            out_channels,
+            kernel_size,
+            stride=stride,
+            padding=padding,
+            bias=not (use_batchnorm),
         )
-        self.aspp_block2 = nn.Sequential(
-            nn.Conv2d(
-                in_dims, out_dims, 3, stride=1, padding=rate[1], dilation=rate[1]
-            ),
-            nn.ReLU(inplace=True),
-            nn.BatchNorm2d(out_dims),
-        )
-        self.aspp_block3 = nn.Sequential(
-            nn.Conv2d(
-                in_dims, out_dims, 3, stride=1, padding=rate[2], dilation=rate[2]
-            ),
-            nn.ReLU(inplace=True),
-            nn.BatchNorm2d(out_dims),
-        )
-
-        self.output = nn.Conv2d(len(rate) * out_dims, out_dims, 1)
-        self._init_weights()
-
-    def forward(self, x):
-        x1 = self.aspp_block1(x)
-        x2 = self.aspp_block2(x)
-        x3 = self.aspp_block3(x)
-        out = torch.cat([x1, x2, x3], dim=1)
-        return self.output(out)
-
-    def _init_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight)
-            elif isinstance(m, nn.BatchNorm2d):
-                m.weight.data.fill_(1)
-                m.bias.data.zero_()
+        relu = nn.ReLU(inplace=True)
+        bn = nn.BatchNorm2d(out_channels)
+        super(Conv2dReLU, self).__init__(conv, bn, relu)
 
 
 class ResConv(nn.Module):
@@ -101,7 +79,7 @@ class TransResUNet(nn.Module):
         )
         self.up_levels = (int)(math.log2(config.transformer.patch_size))
         self.decoder_head_channels = config.decoder.head_channels
-        self.decoder_channels = [self.decoder_head_channels // 2**i for i in range(self.up_levels + 2)]
+        self.decoder_channels = [self.decoder_head_channels // 2**i for i in range(self.up_levels + 1)]
         self.n_skip_channels = self.up_levels - 1 
         self.resnet_width = 64 * config.resnet.width_factor
         self.skip_channels = [self.resnet_width * 2**(i + 1) for i in range(1, self.n_skip_channels)[::-1]] + [self.resnet_width]
@@ -111,7 +89,7 @@ class TransResUNet(nn.Module):
         self.transformer.from_pretrained(weights=np.load(config.pre_trained_path))
         
         # Bridge layers
-        self.bridge = ASPP(self.hidden_size, self.decoder_head_channels)
+        self.bridge = Conv2dReLU(self.hidden_size, self.decoder_head_channels, kernel_size=3, padding='same')
         
         # Decoder layers
         self.decoder_blocks = nn.ModuleList()
@@ -122,9 +100,6 @@ class TransResUNet(nn.Module):
                 )
             else:
                 self.decoder_blocks.append(ResDecoderBlock(self.decoder_channels[i], self.decoder_channels[i + 1]))
-
-        # Output ASPP
-        self.aspp_out = ASPP(self.decoder_channels[-2], self.decoder_channels[-1])
                            
         # Final convolution
         self.conv_final = nn.Conv2d(self.decoder_channels[-1], config.n_classes, kernel_size=1)
@@ -145,9 +120,5 @@ class TransResUNet(nn.Module):
                 x = block(x, skip_connections[i])
             else:
                 x = block(x)
-
-        # Output ASPP
-        x = self.aspp_out(x)
         
-        # Final convolution
         return self.conv_final(x)
