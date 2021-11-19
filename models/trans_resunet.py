@@ -86,7 +86,10 @@ class TransResUNet(nn.Module):
 
         # Encoder layers
         self.transformer = HybridVit(config)
-        self.transformer.from_pretrained(weights=np.load(config.pre_trained_path))
+        if 'pre_trained_path' in config:
+            self.transformer.from_pretrained(weights=np.load(config.pre_trained_path))
+        else:
+            print('pre_trained_path is not specified, use this model with torch.load_state_dict only!')
         
         # Bridge layers
         self.bridge = Conv2dReLU(self.hidden_size, self.decoder_head_channels, kernel_size=3, padding='same')
