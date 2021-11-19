@@ -2,6 +2,7 @@
 
 ## Notebooks
 TransResUNet_b16_fullres_training.ipynb - model training
+
 TransResUNet_b16_fullres_infer.ipynb - model evaluation
 
 ### Pre trained (imagenet21k) weight can be downloaded from here: 
